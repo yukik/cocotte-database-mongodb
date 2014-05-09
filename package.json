@@ -1,0 +1,29 @@
+{
+  "name": "cocotte-database-mongodb",
+  "description": "cocotte-database対応版thunkifyのmongodbドライバー",
+  "homepage": "https://github.com/yukik/cocotte-database-mongodb",
+  "keywords": [
+    "cocotte",
+    "database",
+    "mongodb"
+  ],
+  "author": "Yuki Kurata <yuki.kurata@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/yukik/cocotte-database-mongodb.git"
+  },
+  "dependencies": {
+    "cocotte-is": "*",
+    "cocotte-compare": "*"
+  },
+  "main": "mongodb.js",
+  "version": "0.1.0",
+  "scripts": {
+    "test": "node ./test/test.js"
+  },
+  "directories": {
+    "test": "test"
+  },
+  "readmeFilename": "README.md",
+  "license": "MIT"
+}
