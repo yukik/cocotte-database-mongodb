@@ -95,6 +95,11 @@ var Mongo = function Mongo (schema) {
   this.tasks = 0;
 
   /**
+   * イベントリスナーを最大値まで設定
+   */
+  this.setMaxListeners(0);
+
+  /**
    * アイドル状態になると自動的に接続解除を行う
    */
   this.on('disactived', this.close.bind(this)());
@@ -137,21 +142,22 @@ var queryEnd = function (mongo, callback, err, result) {
 /**
  * 接続を開く
  * @method open
- * @return {Thunkify Function}
+ * @return {Thunk.<MongoDB.DB>} db
  */
 Mongo.prototype.open = function () {
   var self = this;
   var STATUSES = Mongo.CONNECTION_STATUSES;
 
-  // @return {Boolean} opened
   return function (callback) {
     switch(self.connectionStatus) {
     case STATUSES.OPENNING:
-      self.once('opened', function () {callback(null, true);});
+      self.once('opened', function () {callback(null, self.db);});
       break;
     case STATUSES.OPEN:
+      callback(null, self.db);
+      break;
     case STATUSES.ACTIVE:
-      callback(null, true);
+      self.once('disactived', function () {callback(null, self.db);});
       break;
     case STATUSES.CLOSING:
       self.once('closed', function () {self.open()(callback);});
@@ -169,7 +175,7 @@ Mongo.prototype.open = function () {
           self.emit('opened');
           idle(self);
         }
-        callback(err, !err);
+        callback(err, self.db);
       });
       break;
     }
@@ -193,13 +199,12 @@ var idle = function idle (self) {
 /**
  * 接続を解除
  * @method close
- * @return {Thunkify Function}
+ * @return {Thunk.<Boolean>} closed
  */
 Mongo.prototype.close = function () {
   var self = this;
   var STATUSES = Mongo.CONNECTION_STATUSES;
 
-  // @return {Boolean} closed
   return function (callback) {
     callback = callback || doNothing;
     switch(self.connectionStatus) {
@@ -227,6 +232,8 @@ Mongo.prototype.close = function () {
       }, connectionTime);
       break;
     case STATUSES.ACTIVE:
+      self.once('disactived', function () {self.close()(callback);});
+      break;
     case STATUSES.CLOSING:
       self.once('closed', function () {callback(null, true);});
       break;
@@ -240,23 +247,22 @@ Mongo.prototype.close = function () {
 /**
  * テーブル一覧を取得
  * @method getTables
- * @return {Thunkify Function}
+ * @return {Thunkify.<Array.String>} tables
  */
 Mongo.prototype.getTables = function () {
 
   var self = this;
   var prefix = self.dbName + '.';
 
-  // @return {Array} tables
   return function getTables (callback) {
     callback = callback || doNothing;
-    self.open()(function(e) {
+    self.open()(function(e, db) {
       if (e) {
         callback(e, null);
 
       } else {
         queryStart(self);
-        self.db.collectionNames(function(err, results) {
+        db.collectionNames(function(err, results) {
           if (err) {
             queryEnd(self, callback, err, null);
 
@@ -278,55 +284,97 @@ Mongo.prototype.getTables = function () {
 };
 
 /**
- * テーブル構成を取得する
- * @method getSchema
- * @param  {String}   table
- * @return {Thunkify Function}
+ * テーブルの作成
+ *
+ * 明示してテーブルを作成する必要はありません
+ * @method createTable
+ * @param  {Srting}    table
+ * @param  {Object}    schema
+ * @return {Thunk.<Boolean>} success
  */
-Mongo.prototype.getSchema = function (table) {
-  table = null;
+Mongo.prototype.createTable = function (table, schema) {
+  var self = this;
+  schema = null;
 
-  // @return {Object}
-  return function getSchema (callback) {
-    callback(null, null);
+  return function createTable (callback) {
+
+    self.getTables()(function (err, tables){
+      if (err){
+        callback(err, false);
+
+      } else if (~tables.indexOf(table)) {
+        err = new Error('既にテーブルが存在します');
+        callback(err, false);
+
+      } else {
+        callback(null, false);
+
+      }
+    });
+
   };
 };
 
 /**
- * テーブルの作成
- * @method createTable
- * @param  {Srting}    table
- * @param  {Object}    schema
- * @return {Thunkify Function}
+ * テーブル構成を取得する
+ *
+ * 取得する事はできません
+ * @method getSchema
+ * @param  {String}   table
+ * @param  {Object} options
+ *           {Boolean} ifExists
+ * @return {Thunk.<Object>} schema
  */
-Mongo.prototype.createTable = function (table, schema) {
-  table = null;
-  schema = null;
+Mongo.prototype.getSchema = function (table, options) {
+  var self = this;
+  options = alt(Object, options, {});
 
-  // @return {Boolean}
-  return function createTable (callback) {
-    // 処理不要、常にfalse
-    callback(null, false);
+  return function getSchema (callback) {
+    self.getTables()(function (err, tables){
+      if (err){
+        callback(err, null);
+
+      } else if (!options.ifExists && !~tables.indexOf(table)) {
+        err = new Error('テーブルが存在しません');
+        callback(err, null);
+
+      } else {
+        callback(null, null);
+
+      }
+    });
   };
 };
 
 /**
  * テーブルの構成変更
  * @method alterTable
- * @param  {Srting}    table
- * @param  {Object}    schema
- * @return {Thunlify Function}
+ * @param  {Srting}   table
+ * @param  {String}   field
+ * @param  {Function} type
+ * @param  {Object}   options
+ * @return {Thunk.<Boolean>} success
  */
 Mongo.prototype.addField = function (table, field, type, options) {
-  table = null;
+  var self = this;
   field = null;
   type = null;
-  options = null;
+  options = alt(Object, options, {});
 
-  // @return {Boolean}
   return function addField (callback) {
-    // 処理不要、常にfalse
-    callback(null, false);
+    self.getTables()(function (err, tables){
+      if (err){
+        callback(err, false);
+
+      } else if (!options.ifExists && !~tables.indexOf(table)) {
+        err = new Error('テーブルが存在しません');
+        callback(err, false);
+
+      } else {
+        callback(null, false);
+
+      }
+    });
   };
 };
 
@@ -337,38 +385,58 @@ Mongo.prototype.addField = function (table, field, type, options) {
  * @param  {String}   field
  * @param  {Function} type
  * @param  {Object}   options
- * @return {Thunkify Function}
+ * @return {Thunk.<Boolean>} success
  */
 Mongo.prototype.alterField = function (table, field, type, options) {
-  table = null;
+  var self = this;
   field = null;
   type = null;
   options = null;
 
-  // @return {Boolean}
-  return function alterField (callback) {
-    // 処理不要、常にfalse
-    callback(null, false);
+  return function addField (callback) {
+    self.getTables()(function (err, tables){
+      if (err){
+        callback(err, false);
+
+      } else if (!~tables.indexOf(table)) {
+        err = new Error('テーブルが存在しません');
+        callback(err, false);
+
+      } else {
+        callback(null, false);
+
+      }
+    });
   };
 };
 
 /**
  * フィールド定義の削除
  * @method removeField
- * @param  {String}    table
- * @param  {String}    field
- * @param  {Object}    options
- * @return {Thunkify Function}
+ * @param  {String} table
+ * @param  {String} field
+ * @param  {Object} options
+ * @return {Thunk.<Boolean>} success
  */
 Mongo.prototype.removeField = function (table, field, options) {
-  table = null;
+  var self = this;
   field = null;
   options = null;
 
-  // @return Boolean
-  return function removeField (callback) {
-    // 処理不要、常にfalse
-    callback(null, false);
+  return function addField (callback) {
+    self.getTables()(function (err, tables){
+      if (err){
+        callback(err, false);
+
+      } else if (!~tables.indexOf(table)) {
+        err = new Error('テーブルが存在しません');
+        callback(err, false);
+
+      } else {
+        callback(null, false);
+
+      }
+    });
   };
 };
 
@@ -378,7 +446,7 @@ Mongo.prototype.removeField = function (table, field, options) {
  * @param  {String}  table
  * @param  {Object}  options
  *            {Boolean} ifExists テーブルが存在しない場合も例外を発生させない
- * @return {Thunkify Function}
+ * @return {Thunk.<Boolean>} success
  */
 Mongo.prototype.dropTable = function (table, options) {
   var self = this;
@@ -387,13 +455,13 @@ Mongo.prototype.dropTable = function (table, options) {
   // @return {Boolean} 削除した場合はtrue
   return function dropTable (callback) {
     callback = callback || doNothing;
-    self.open()(function(err) {
+    self.open()(function(err, db) {
       if (err) {
         callback(err, false);
 
       } else {
         queryStart(self);
-        self.db.dropCollection(table, function (err, result) {
+        db.dropCollection(table, function (err, result) {
           err = options.ifExists ? null : err;
           queryEnd(self, callback, err, result);
         });
@@ -406,23 +474,47 @@ Mongo.prototype.dropTable = function (table, options) {
 /**
  * インデックス一覧を取得する
  * @method getIndexes
- * @param  {String}   table
- * @return {Thunkify Function}
+ * @param  {String} table
+ * @param  {Object} options
+ *           {Boolean} ifExists
+ * @return {Thunk.<Array.Array.String>} indexes
  */
-Mongo.prototype.getIndexes = function (table) {
+Mongo.prototype.getIndexes = function (table, options) {
   var self = this;
+  var prefix = this.dbName + '.';
+  options = alt(Object, options, {});
 
   // @return {Array} indexes
   return function getIndexes (callback) {
     callback = callback || doNothing;
-    self.open()(function(err){
+    self.open()(function(err, db){
       if (err) {
         callback(err, null);
 
       } else {
         queryStart(self);
-        self.db.collection(table).indexInformation(function(err, indexes) {
-          queryEnd(self, callback, err, indexesDeparse(indexes));
+        db.collection(table).indexInformation(function(err, indexes) {
+          if (err) {
+            queryEnd(self, callback, err, null);
+
+          } else {
+            indexes = indexesDeparse(indexes);
+
+            // テーブルの存在確認を行う
+            if (!options.ifExists && !indexes.length) {
+              db.collectionNames(function (err, names) {
+                var exists = names && names.some(function(t){return t.name === prefix + table; });
+                if (!err && !exists) {
+                  err = new Error('テーブルが存在しません');
+                }
+                queryEnd(self, callback, err, indexes);
+              });
+
+            } else {
+              queryEnd(self, callback, err, indexes);
+            }
+          }
+          
         });
 
       }
@@ -438,7 +530,7 @@ Mongo.prototype.getIndexes = function (table) {
  * @param  {Object}  options
  *           {Boolean} unique
  *           {Boolean} ifExists 
- * @return {Thunkify function}
+ * @return {Thunk.<Boolean>} success
  */
 Mongo.prototype.addIndex = function (table, fields, options) {
   var self = this;
@@ -451,16 +543,15 @@ Mongo.prototype.addIndex = function (table, fields, options) {
     op.unique = true;
   }
 
-  // @return {Boolean} success
   return function addIndex (callback) {
     callback = callback || doNothing;
-    self.open()(function(err) {
+    self.open()(function(err, db) {
       if (err) {
         callback(err, false);
 
       } else {
         queryStart(self);
-        self.db.collection(table).createIndex(indexes, op, function(err, name) {
+        db.collection(table).createIndex(indexes, op, function(err, name) {
           var success = err ? null : !!name;
           err = options.ifExists ? null : err;
           queryEnd(self, callback, err, success);
@@ -478,7 +569,7 @@ Mongo.prototype.addIndex = function (table, fields, options) {
  * @param  {String|Array}   fields
  * @param  {Object}  options
  *           {Boolean} ifExists 
- * @return {Thunkify Function}
+ * @return {Thunk.<Boolean>} success
  */
 Mongo.prototype.removeIndex = function (table, fields, options) {
   var self = this;
@@ -486,7 +577,6 @@ Mongo.prototype.removeIndex = function (table, fields, options) {
 
   options = alt(Object, options, {});
 
-  // @return {Boolean} success
   return function removeIndex (callback) {
     callback = callback || doNothing;
     if (!index) {
@@ -495,13 +585,13 @@ Mongo.prototype.removeIndex = function (table, fields, options) {
       return;
     }
 
-    self.open()(function(err) {
+    self.open()(function(err, db) {
       if (err) {
         callback(err, false);
 
       } else {
         queryStart(self);
-        var coll = self.db.collection(table);
+        var coll = db.collection(table);
 
         // 既存インデックスの調査
         coll.indexInformation(function(err, indexes) {
@@ -533,12 +623,11 @@ Mongo.prototype.removeIndex = function (table, fields, options) {
  * 行を特定するIDを作成
  * @method createId
  * @param  {String}   table
- * @return {Thunkify Function}
+ * @return {Thunk.<String>} rowId
  */
 Mongo.prototype.createId = function (table) {
   table = null;
 
-  // @return {Boolean} rowId
   return function createId (callback) {
     callback = callback || doNothing;
     callback(null, (new ObjectID()).toString());
@@ -546,7 +635,7 @@ Mongo.prototype.createId = function (table) {
 };
 
 /**
- * 取得
+ * 複数行を取得
  * @method find
  * @param  {String}       table
  * @param  {Object}       selector
@@ -555,7 +644,7 @@ Mongo.prototype.createId = function (table) {
  *           {String|Array} sort
  *           {Number}       skip
  *           {Number}       limit
- * @return {Thunkify Function}
+ * @return {Thunk.<Array.Object>} rows
  */
 Mongo.prototype.find = function (table, selector, fields, options) {
   var self = this;
@@ -563,16 +652,20 @@ Mongo.prototype.find = function (table, selector, fields, options) {
   fields = fieldsParse(fields);
   options = findOptionsParse(options, ['sort', 'skip', 'limit']);
 
-  // @return {Array} rows
+  // _idを指定した場合はlimitが強制的に設定される
+  if (selector._id) {
+    options.limit = 1;
+  }
+
   return function find (callback) {
     callback = callback || doNothing;
-    self.open()(function(e) {
+    self.open()(function(e, db) {
       if (e) {
         callback(e, []);
 
       } else {
         queryStart(self);
-        self.db.collection(table)
+        db.collection(table)
           .find(selector, fields, options)
           .toArray(function(err, results) {
             results.forEach(function(row) {
@@ -597,7 +690,7 @@ Mongo.prototype.find = function (table, selector, fields, options) {
  * @param  {Object}        options
  *           {String|Array}  sort
  *           {Number}        skip
- * @return {Object}
+ * @return {Thunk.<Object>} row
  */
 Mongo.prototype.getRow = function (table, selector, fields, options) {
   var self = this;
@@ -636,15 +729,19 @@ Mongo.prototype.getRow = function (table, selector, fields, options) {
  * @param  {Object}         options
  *           {String|Array}   sort
  *           {Number}         skip
- * @return {Thunkify Function} 
+ * @return {Thunk.<Mixed>} value 
  */
 Mongo.prototype.getValue = function (table, selector, field, options) {
+
+  if (typeof field !== 'string') {
+    throw new Error('フィールドを指定してください');
+  }
+
   var self = this;
-  var idFind = typeof selector === 'string';
   selector = selectorParse(selector);
   var fields = {};
   fields[field] = 1;
-  options = idFind ? null : findOptionsParse(options, ['sort', 'skip']);
+  options = findOptionsParse(options, ['sort', 'skip']);
 
   return function getValue (callback) {
 
@@ -665,10 +762,15 @@ Mongo.prototype.getValue = function (table, selector, field, options) {
 
 /**
  * 行の追加更新
+ *
+ * 必ずdataにrowIdが含まれる必要があります
+ * そのrowIdと同じ行がデータベースに存在しない場合は追加に
+ * 存在する場合は更新になります
+ * 
  * @method upsert
  * @param {String}   table
  * @param {Object}   data
- * @return {Thunkify Function}
+ * @return {Thunk.<Boolean>} success
  */
 Mongo.prototype.upsert = function (table, data) {
 
@@ -699,10 +801,13 @@ Mongo.prototype.upsert = function (table, data) {
 
 /**
  * 行の追加
+ *
+ * upsertと異なりdataにrowIdを含んではいけません
+ * 
  * @method add
  * @param {String}   table
  * @param {Object}   data
- * @return {Thunkify Function}
+ * @return {Thunk.<String>} rowId
  */
 Mongo.prototype.add = function (table, data) {
 
@@ -722,13 +827,13 @@ Mongo.prototype.add = function (table, data) {
   // @return {String} rowId
   return function add (callback) {
     callback = callback || doNothing;
-    self.open()(function(err) {
+    self.open()(function(err, db) {
       if (err) {
         callback(err, null);
 
       } else {
         queryStart(self);
-        self.db.collection(table).insert(data, options, function(err, result) {
+        db.collection(table).insert(data, options, function(err, result) {
           var rowId = result && result[0] ? result[0]._id.toString() : null;
           queryEnd(self, callback, err, rowId);
         });
@@ -744,7 +849,7 @@ Mongo.prototype.add = function (table, data) {
  * @param  {String}  table
  * @param  {Object}  selector
  * @param  {Object}  data
- * @return {Thunkify Function}
+ * @return {Thunk.<Number>} effectRowCount
  */
 Mongo.prototype.update = function (table, selector, data) {
 
@@ -765,12 +870,11 @@ Mongo.prototype.update = function (table, selector, data) {
     options.multi = true;
   }
 
-  // @return {Boolean} count
   return function update(callback) {
     callback = callback || doNothing;
     self.open()(function(err, db) {
       if (err) {
-        callback(err, false);
+        callback(err, 0);
 
       } else {
         queryStart(self);
@@ -785,17 +889,21 @@ Mongo.prototype.update = function (table, selector, data) {
 
 /**
  * 行の削除
+ *
+ * selectorに文字列を設定すると行番号と見なします
+ * オブジェクトを設定すると複数行の削除をします
+ * 行を設定した場合は、対象行を削除します
+ * 
  * @method remove
  * @param  {String}        table
  * @param  {String|Object} selector
- * @return {Thunkify Function}
+ * @return {Thunk.<Number>} effectRowCount
  */
 Mongo.prototype.remove = function (table, selector) {
 
   var self = this;
-  var toId = typeof selector === 'string';
   selector = selectorParse(selector);
-  var options = toId ? {w: 1} : {w: 1, multi: true};
+  var options = selector._id ? {w: 1} : {w: 1, multi: true};
 
   // @return {Number} effectRowCount
   return function remove(callback) {
@@ -822,7 +930,7 @@ Mongo.prototype.remove = function (table, selector) {
  * @param  {Function} map
  * @param  {Function} reduce
  * @param  {Object}   options
- * @return {Thunlify Function}
+ * @return {Thunk.<Mixed>} result
  */
 Mongo.prototype.mapReduce = function (table, map, reduce, options) {
   var self = this;

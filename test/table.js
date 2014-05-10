@@ -13,7 +13,6 @@ mongo.on('closed', function () {console.log('closed');});
 mongo.on('actived', function () {console.log('actived');});
 mongo.on('disactived', function () {console.log('disactived');});
 
-
 co(function*(){
 
   var result;
