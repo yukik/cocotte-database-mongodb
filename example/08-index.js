@@ -13,21 +13,46 @@ db.on('disactived', function () {console.log('disactived');});
 
 co(function*(){
 
-  var tableName = 'testdb';
+  var tableName = 'testdb1';
 
-  // インデックスの追加
-  console.log(yield db.addIndex(tableName, 'name', {ifExists: true}));
+  try {
 
-  // ユニークインデックスの追加
-  console.log(yield db.addIndex(tableName, 'loginId', {unique: true}));
+    console.log(yield db.getRow(tableName, {name: 'hoge'}));
 
-  // インデックス一覧
-  console.log(yield db.getIndexes(tableName));
+    // インデックス無しの取得時間
+    var hr = process.hrtime();
+    console.log((yield db.find(tableName, {name: 'hoge'})).length);
+    console.log(process.hrtime(hr));
 
-  // インデックスの削除
-  console.log(yield db.removeIndex(tableName, 'name', {ifExists: true}));
+    // インデックスの追加
+    console.log(yield db.addIndex(tableName, 'name', {ifExists: true}));
 
-  // インデックス一覧
-  console.log(yield db.getIndexes(tableName));
+    // インデックスありの取得時間
+    hr = process.hrtime();
+    console.log((yield db.find(tableName, {name: 'hoge'})).length);
+    console.log(process.hrtime(hr));
+
+    // ユニークインデックスの追加
+    console.log(yield db.addIndex(tableName, 'loginId', {unique: true}));
+
+    // インデックス一覧
+    console.log(yield db.getIndexes(tableName));
+
+    // インデックスの削除
+    console.log(yield db.removeIndex(tableName, 'name', {ifExists: true}));
+
+    // インデックス一覧
+    console.log(yield db.getIndexes(tableName));
+
+    // インデックスの削除
+    console.log(yield db.removeIndex(tableName, 'loginId', {ifExists: true}));
+
+    // インデックス一覧
+    console.log(yield db.getIndexes(tableName));
+
+  } catch(e) {
+    console.error(e);
+
+  }
 
 })();

@@ -13,7 +13,9 @@ db.on('disactived', function () {console.log('disactived');});
 
 co(function*(){
 
-  var tableName = 'testdb';
+  var tableName = 'testdb1';
+
+  // TODO
 
 })();
 

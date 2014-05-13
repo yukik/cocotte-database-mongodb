@@ -15,7 +15,7 @@ co(function*(){
 
   var tableName = 'testdb1';
 
-  var row = yield db.getRow(tableName);
+  var row = yield db.getRow(tableName, {name: 'foo'});
 
   console.log(row);
 

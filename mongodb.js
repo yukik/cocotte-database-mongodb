@@ -31,15 +31,11 @@ var getIndexName = require('./lib/get-index-name');
 /**
  * アイドル状態までの接続維持時間(ms)
  */
-var connectionTime = 250;
+var connectionTime = 300;
 
 /**
- * インスタンスの生成
- * 
- * 直接使用する事は稀で、Databaseインスタンスのhas-a
- * database.get(databaseName)で取得されるデータベース接続が内部から操作される
- * 
- * @class Database.drivers.Mongo
+ * コンストラクタ
+ * @class Mongo
  * @constructor
  * @param  {Object} schema 
  *      host: {String} 接続先
@@ -95,14 +91,14 @@ var Mongo = function Mongo (schema) {
   this.tasks = 0;
 
   /**
-   * イベントリスナーを最大値まで設定
+   * リスナー無制限
    */
   this.setMaxListeners(0);
 
   /**
    * アイドル状態になると自動的に接続解除を行う
    */
-  this.on('disactived', this.close.bind(this)());
+  this.on('disactived', this.close());
 };
 
 util.inherits(Mongo, EventEmitter);
@@ -119,7 +115,7 @@ Mongo.CONNECTION_STATUSES = {
 };
 
 // データベースへの問い合わせの開始
-var queryStart = function (mongo) {
+var queryStart = function queryStart (mongo) {
   mongo.active++;
   mongo.tasks++;
   if (mongo.active === 1) {
@@ -129,7 +125,7 @@ var queryStart = function (mongo) {
 };
 
 // データベースへの問い合わせ完了
-var queryEnd = function (mongo, callback, err, result) {
+var queryEnd = function queryEnd (mongo, callback, err, result) {
   mongo.active--;
   if (!mongo.active) {
     mongo.connectionStatus = Mongo.CONNECTION_STATUSES.OPEN;
@@ -144,11 +140,12 @@ var queryEnd = function (mongo, callback, err, result) {
  * @method open
  * @return {Thunk.<MongoDB.DB>} db
  */
-Mongo.prototype.open = function () {
+Mongo.prototype.open = function open() {
+  debug();
   var self = this;
   var STATUSES = Mongo.CONNECTION_STATUSES;
 
-  return function (callback) {
+  return function openThunk (callback) {
     switch(self.connectionStatus) {
     case STATUSES.OPENNING:
       self.once('opened', function () {callback(null, self.db);});
@@ -189,6 +186,7 @@ Mongo.prototype.open = function () {
  * @param  {Mongo} self
  */
 var idle = function idle (self) {
+  debug();
   setTimeout(function(){
     if (!self.tasks && self.connectionStatus === Mongo.CONNECTION_STATUSES.OPEN) {
       self.emit('disactived');
@@ -201,35 +199,35 @@ var idle = function idle (self) {
  * @method close
  * @return {Thunk.<Boolean>} closed
  */
-Mongo.prototype.close = function () {
+Mongo.prototype.close = function close () {
+  debug();
   var self = this;
   var STATUSES = Mongo.CONNECTION_STATUSES;
 
-  return function (callback) {
+  return function closeThunk (callback) {
     callback = callback || doNothing;
     switch(self.connectionStatus) {
     case STATUSES.OPENNING:
       self.once('opened', function () {self.close()(callback);});
       break;
     case STATUSES.OPEN:
-      setTimeout(function(){
-        switch(self.connectionStatus) {
-        case STATUSES.OPEN:
+      setTimeout(function(tasks){
+        if (tasks === self.tasks) {
           self.connectionStatus = STATUSES.CLOSING;
           self.emit('closing');
-          self.db.close(function(){
-            self.connectionStatus = STATUSES.CLOSE;
-            self.emit('closed');
-            callback(null, true);
+          self.db.close(function(err){
+            if (err) {
+              self.connectionStatus = STATUSES.OPEN;
+            } else {
+              self.connectionStatus = STATUSES.CLOSE;
+              self.emit('closed');
+            }
+            callback(err, !err);
           });
-          break;
-        case STATUSES.CLOSE:
-          callback(null, true);
-          break;
-        default:
-          self.once('closed', function () {callback(null, true);});
+        } else {
+          callback(null, false);
         }
-      }, connectionTime);
+      }, connectionTime, self.tasks);
       break;
     case STATUSES.ACTIVE:
       self.once('disactived', function () {self.close()(callback);});
@@ -247,14 +245,15 @@ Mongo.prototype.close = function () {
 /**
  * テーブル一覧を取得
  * @method getTables
- * @return {Thunkify.<Array.String>} tables
+ * @return {Thunk.<Array.String>} tableNames
  */
-Mongo.prototype.getTables = function () {
+Mongo.prototype.getTables = function getTables () {
+  debug();
 
   var self = this;
   var prefix = self.dbName + '.';
 
-  return function getTables (callback) {
+  return function getTablesThunk (callback) {
     callback = callback || doNothing;
     self.open()(function(e, db) {
       if (e) {
@@ -284,163 +283,6 @@ Mongo.prototype.getTables = function () {
 };
 
 /**
- * テーブルの作成
- *
- * 明示してテーブルを作成する必要はありません
- * @method createTable
- * @param  {Srting}    table
- * @param  {Object}    schema
- * @return {Thunk.<Boolean>} success
- */
-Mongo.prototype.createTable = function (table, schema) {
-  var self = this;
-  schema = null;
-
-  return function createTable (callback) {
-
-    self.getTables()(function (err, tables){
-      if (err){
-        callback(err, false);
-
-      } else if (~tables.indexOf(table)) {
-        err = new Error('既にテーブルが存在します');
-        callback(err, false);
-
-      } else {
-        callback(null, false);
-
-      }
-    });
-
-  };
-};
-
-/**
- * テーブル構成を取得する
- *
- * 取得する事はできません
- * @method getSchema
- * @param  {String}   table
- * @param  {Object} options
- *           {Boolean} ifExists
- * @return {Thunk.<Object>} schema
- */
-Mongo.prototype.getSchema = function (table, options) {
-  var self = this;
-  options = alt(Object, options, {});
-
-  return function getSchema (callback) {
-    self.getTables()(function (err, tables){
-      if (err){
-        callback(err, null);
-
-      } else if (!options.ifExists && !~tables.indexOf(table)) {
-        err = new Error('テーブルが存在しません');
-        callback(err, null);
-
-      } else {
-        callback(null, null);
-
-      }
-    });
-  };
-};
-
-/**
- * テーブルの構成変更
- * @method alterTable
- * @param  {Srting}   table
- * @param  {String}   field
- * @param  {Function} type
- * @param  {Object}   options
- * @return {Thunk.<Boolean>} success
- */
-Mongo.prototype.addField = function (table, field, type, options) {
-  var self = this;
-  field = null;
-  type = null;
-  options = alt(Object, options, {});
-
-  return function addField (callback) {
-    self.getTables()(function (err, tables){
-      if (err){
-        callback(err, false);
-
-      } else if (!options.ifExists && !~tables.indexOf(table)) {
-        err = new Error('テーブルが存在しません');
-        callback(err, false);
-
-      } else {
-        callback(null, false);
-
-      }
-    });
-  };
-};
-
-/**
- * フィールド定義の修正
- * @method alterField
- * @param  {String}   table
- * @param  {String}   field
- * @param  {Function} type
- * @param  {Object}   options
- * @return {Thunk.<Boolean>} success
- */
-Mongo.prototype.alterField = function (table, field, type, options) {
-  var self = this;
-  field = null;
-  type = null;
-  options = null;
-
-  return function addField (callback) {
-    self.getTables()(function (err, tables){
-      if (err){
-        callback(err, false);
-
-      } else if (!~tables.indexOf(table)) {
-        err = new Error('テーブルが存在しません');
-        callback(err, false);
-
-      } else {
-        callback(null, false);
-
-      }
-    });
-  };
-};
-
-/**
- * フィールド定義の削除
- * @method removeField
- * @param  {String} table
- * @param  {String} field
- * @param  {Object} options
- * @return {Thunk.<Boolean>} success
- */
-Mongo.prototype.removeField = function (table, field, options) {
-  var self = this;
-  field = null;
-  options = null;
-
-  return function addField (callback) {
-    self.getTables()(function (err, tables){
-      if (err){
-        callback(err, false);
-
-      } else if (!~tables.indexOf(table)) {
-        err = new Error('テーブルが存在しません');
-        callback(err, false);
-
-      } else {
-        callback(null, false);
-
-      }
-    });
-  };
-};
-
-/**
  * テーブルの削除
  * @method dropTable
  * @param  {String}  table
@@ -448,12 +290,12 @@ Mongo.prototype.removeField = function (table, field, options) {
  *            {Boolean} ifExists テーブルが存在しない場合も例外を発生させない
  * @return {Thunk.<Boolean>} success
  */
-Mongo.prototype.dropTable = function (table, options) {
+Mongo.prototype.dropTable = function dropTable (table, options) {
   var self = this;
   options = alt(Object, options, {});
 
   // @return {Boolean} 削除した場合はtrue
-  return function dropTable (callback) {
+  return function dropTableThunk (callback) {
     callback = callback || doNothing;
     self.open()(function(err, db) {
       if (err) {
@@ -479,13 +321,13 @@ Mongo.prototype.dropTable = function (table, options) {
  *           {Boolean} ifExists
  * @return {Thunk.<Array.Array.String>} indexes
  */
-Mongo.prototype.getIndexes = function (table, options) {
+Mongo.prototype.getIndexes = function getIndexes (table, options) {
   var self = this;
   var prefix = this.dbName + '.';
   options = alt(Object, options, {});
 
   // @return {Array} indexes
-  return function getIndexes (callback) {
+  return function getIndexesThunk (callback) {
     callback = callback || doNothing;
     self.open()(function(err, db){
       if (err) {
@@ -532,7 +374,7 @@ Mongo.prototype.getIndexes = function (table, options) {
  *           {Boolean} ifExists 
  * @return {Thunk.<Boolean>} success
  */
-Mongo.prototype.addIndex = function (table, fields, options) {
+Mongo.prototype.addIndex = function addIndex (table, fields, options) {
   var self = this;
   var indexes = indexesParse(fields);
 
@@ -543,7 +385,7 @@ Mongo.prototype.addIndex = function (table, fields, options) {
     op.unique = true;
   }
 
-  return function addIndex (callback) {
+  return function addIndexThunk (callback) {
     callback = callback || doNothing;
     self.open()(function(err, db) {
       if (err) {
@@ -571,13 +413,13 @@ Mongo.prototype.addIndex = function (table, fields, options) {
  *           {Boolean} ifExists 
  * @return {Thunk.<Boolean>} success
  */
-Mongo.prototype.removeIndex = function (table, fields, options) {
+Mongo.prototype.removeIndex = function removeIndex (table, fields, options) {
   var self = this;
   var index = indexesParse(fields);
 
   options = alt(Object, options, {});
 
-  return function removeIndex (callback) {
+  return function removeIndexThunk (callback) {
     callback = callback || doNothing;
     if (!index) {
       var e = new Error('インデックスを設定するフィールドを正しく設定してください');
@@ -625,10 +467,10 @@ Mongo.prototype.removeIndex = function (table, fields, options) {
  * @param  {String}   table
  * @return {Thunk.<String>} rowId
  */
-Mongo.prototype.createId = function (table) {
+Mongo.prototype.createId = function createId (table) {
   table = null;
 
-  return function createId (callback) {
+  return function createIdThynk (callback) {
     callback = callback || doNothing;
     callback(null, (new ObjectID()).toString());
   };
@@ -646,7 +488,7 @@ Mongo.prototype.createId = function (table) {
  *           {Number}       limit
  * @return {Thunk.<Array.Object>} rows
  */
-Mongo.prototype.find = function (table, selector, fields, options) {
+Mongo.prototype.find = function find (table, selector, fields, options) {
   var self = this;
   selector = selectorParse(selector);
   fields = fieldsParse(fields);
@@ -657,7 +499,7 @@ Mongo.prototype.find = function (table, selector, fields, options) {
     options.limit = 1;
   }
 
-  return function find (callback) {
+  return function findThunk (callback) {
     callback = callback || doNothing;
     self.open()(function(e, db) {
       if (e) {
@@ -692,14 +534,14 @@ Mongo.prototype.find = function (table, selector, fields, options) {
  *           {Number}        skip
  * @return {Thunk.<Object>} row
  */
-Mongo.prototype.getRow = function (table, selector, fields, options) {
+Mongo.prototype.getRow = function getRow (table, selector, fields, options) {
   var self = this;
   var idFind = typeof selector === 'string';
   selector = selectorParse(selector);
   fields = fieldsParse(fields);
   options = idFind ? null : findOptionsParse(options, ['sort', 'skip']);
 
-  return function getRow (callback) {
+  return function getRowThunk (callback) {
     callback = callback || doNothing;
     self.open()(function(err, db) {
       if (err) {
@@ -731,7 +573,7 @@ Mongo.prototype.getRow = function (table, selector, fields, options) {
  *           {Number}         skip
  * @return {Thunk.<Mixed>} value 
  */
-Mongo.prototype.getValue = function (table, selector, field, options) {
+Mongo.prototype.getValue = function getValue (table, selector, field, options) {
 
   if (typeof field !== 'string') {
     throw new Error('フィールドを指定してください');
@@ -743,7 +585,7 @@ Mongo.prototype.getValue = function (table, selector, field, options) {
   fields[field] = 1;
   options = findOptionsParse(options, ['sort', 'skip']);
 
-  return function getValue (callback) {
+  return function getValueThunk (callback) {
 
     self.open()(function(err, db) {
       if (err) {
@@ -761,29 +603,29 @@ Mongo.prototype.getValue = function (table, selector, field, options) {
 };
 
 /**
- * 行の追加更新
+ * 行の保存
  *
- * 必ずdataにrowIdが含まれる必要があります
+ * 必ずrowにrowIdが含まれる必要があります
  * そのrowIdと同じ行がデータベースに存在しない場合は追加に
  * 存在する場合は更新になります
  * 
- * @method upsert
+ * @method save
  * @param {String}   table
- * @param {Object}   data
+ * @param {Object}   row
  * @return {Thunk.<Boolean>} success
  */
-Mongo.prototype.upsert = function (table, data) {
+Mongo.prototype.save = function save (table, row) {
 
-  if (!data.rowId) {
+  if (!row.rowId) {
     throw new Error('データに行番号の設定がありません');
   }
 
   var self = this;
-  var selector = {_id: new ObjectID(data.rowId)};
-  data = dataParse(data, 'update');
+  var selector = {_id: new ObjectID(row.rowId)};
+  row = dataParse(row, 'update');
   var options = {w: 1, upsert: true};
 
-  return function upsert (callback) {
+  return function saveThunk (callback) {
     callback = callback || doNothing;
     self.open()(function(err, db) {
       if (err) {
@@ -791,7 +633,7 @@ Mongo.prototype.upsert = function (table, data) {
 
       } else {
         queryStart(self);
-        db.collection(table).update(selector, data, options, function(err, result) {
+        db.collection(table).update(selector, row, options, function(err, result) {
           queryEnd(self, callback, err, !!result);
         });
       }
@@ -802,30 +644,30 @@ Mongo.prototype.upsert = function (table, data) {
 /**
  * 行の追加
  *
- * upsertと異なりdataにrowIdを含んではいけません
+ * saveと異なりrowにrowIdを含んではいけません
  * 
  * @method add
  * @param {String}   table
- * @param {Object}   data
+ * @param {Object}   row
  * @return {Thunk.<String>} rowId
  */
-Mongo.prototype.add = function (table, data) {
+Mongo.prototype.add = function add (table, row) {
 
-  if (data.rowId) {
+  if (row.rowId) {
     throw new Error('行番号を指定してはいけません');
   }
 
   var self = this;
 
-  data = dataParse(data, 'add');
-  if (!data) {
+  row = dataParse(row, 'add');
+  if (!row) {
     throw new Error('データが正しくありません');
   }
 
   var options = {w: 1};
 
   // @return {String} rowId
-  return function add (callback) {
+  return function addThunk (callback) {
     callback = callback || doNothing;
     self.open()(function(err, db) {
       if (err) {
@@ -833,7 +675,7 @@ Mongo.prototype.add = function (table, data) {
 
       } else {
         queryStart(self);
-        db.collection(table).insert(data, options, function(err, result) {
+        db.collection(table).insert(row, options, function(err, result) {
           var rowId = result && result[0] ? result[0]._id.toString() : null;
           queryEnd(self, callback, err, rowId);
         });
@@ -851,7 +693,7 @@ Mongo.prototype.add = function (table, data) {
  * @param  {Object}  data
  * @return {Thunk.<Number>} effectRowCount
  */
-Mongo.prototype.update = function (table, selector, data) {
+Mongo.prototype.update = function update (table, selector, data) {
 
   var self = this;
 
@@ -870,7 +712,7 @@ Mongo.prototype.update = function (table, selector, data) {
     options.multi = true;
   }
 
-  return function update(callback) {
+  return function updateThunk (callback) {
     callback = callback || doNothing;
     self.open()(function(err, db) {
       if (err) {
@@ -899,14 +741,14 @@ Mongo.prototype.update = function (table, selector, data) {
  * @param  {String|Object} selector
  * @return {Thunk.<Number>} effectRowCount
  */
-Mongo.prototype.remove = function (table, selector) {
+Mongo.prototype.remove = function remove (table, selector) {
 
   var self = this;
   selector = selectorParse(selector);
   var options = selector._id ? {w: 1} : {w: 1, multi: true};
 
   // @return {Number} effectRowCount
-  return function remove(callback) {
+  return function removeThunk (callback) {
     callback = callback || doNothing;
     self.open()(function(err, db) {
       if (err) {
@@ -921,44 +763,6 @@ Mongo.prototype.remove = function (table, selector) {
       }
     });
   };
-};
-
-/**
- * map-reduceによる集計
- * @method query
- * @param  {String}   table
- * @param  {Function} map
- * @param  {Function} reduce
- * @param  {Object}   options
- * @return {Thunk.<Mixed>} result
- */
-Mongo.prototype.mapReduce = function (table, map, reduce, options) {
-  var self = this;
-  options = null || {out: { inline: 1 }};
-
-  return function mapReduce (callback) {
-    callback = callback || doNothing;
-    self.open()(function(err, db) {
-      if (err) {
-        callback(err, null);
-
-      } else {
-        queryStart(self);
-        db.collection(table).mapReduce(map, reduce, options, function (err, results) {
-          queryEnd(self, callback, err, results);
-        });
-
-      }
-    });
-  };
-};
-
-/**
- * (未対応) SQLクエリ発行
- * @method sql
- */
-Mongo.prototype.sql = function sql () {
-  throw new Error('SQLに対応していません');
 };
 
 module.exports = exports = Mongo;
